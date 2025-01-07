@@ -1,16 +1,15 @@
-import mss
+import threading
 import torch
 import platform
-import pywinctl as pwc
 import numpy as np
 import cv2
 import time
-import subprocess
 import adbutils
+import subprocess
+from adbutils import adb
 from ultralytics import YOLO
 
 from AI_Models.VAE.models import VAE
-#from AI_Models.EntityDetector import 
 
 def get_device():
     if torch.cuda.is_available():
@@ -40,7 +39,6 @@ def get_device():
         return torch.device("cpu")
 
 device = get_device()
-app_name = "scrcpy"
 entity_detector_resolution = (480, 224)
 vae_resolution = (144, 64)
 topbar_size = 32
@@ -108,24 +106,6 @@ def get_vae_output(frame):
     mu = vae_model.encoder.forward_mu(vae_img)
     return mu
 
-def apply_nms(boxes, scores, labels):
-    indices = cv2.dnn.NMSBoxes(boxes, scores, score_threshold=entity_detector_args["threshold"], nms_threshold=entity_detector_args["iou_threshold"])
-
-    nms_detections = []
-
-    if len(indices) > 0:
-        for i in indices.flatten():
-            x, y, w, h = boxes[i]
-            score = scores[i]
-            label = labels[i]
-
-            nms_detections.append({
-                "label": label,
-                "confidence": score,
-                "bbox": [x, y, w, h]
-            })
-
-    return nms_detections
 
 def get_entities(frame):
     frame_resize = cv2.resize(frame, entity_detector_resolution, interpolation=cv2.INTER_LANCZOS4)
@@ -138,7 +118,6 @@ def get_entities(frame):
     preds = entity_model.predict(frame_resize, verbose=False, conf=entity_detector_args["threshold"], iou=entity_detector_args["iou_threshold"], device="cuda:0")[0]
     outputs = []
 
-    #for result in preds:
     for detection in preds.boxes:
         outputs.append({
             "label": entity_detector_args["labels"][int(detection.cls)],
@@ -146,7 +125,7 @@ def get_entities(frame):
             "bbox": detection.xyxyn
         })
 
-    print((time.time() - start) * 1000)
+    #print((time.time() - start) * 1000)
 
     return outputs
 
@@ -174,82 +153,51 @@ def handle_frame(frame):
         text = f"{label}: {confidence:.2f}"
         cv2.putText(frame_bgr, text, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-    cv2.imshow(f"Capture - {app_name}", frame_bgr)
-
-#def find_window(app_name):
-#    windows = pwc.getAllWindows()
-#
-#    while True:
-#        for win in windows:
-#            print(win.title)
-#            if app_name.lower() in win.title.lower():
-#                return win
-#        time.sleep(1)
-#    return None
+    cv2.imshow(f"TrophyHunter", frame_bgr)
 
 
-def capture_app_window(app_name):
+def capture_app_window():
     adb = adbutils.AdbClient(host="127.0.0.1", port=5037)
+    #device = adb.device(serial=adb.list()[0]) # only first device for now 
     device = adb.device()
 
-    scrcpy_process = subprocess.Popen(
-        [
-            "scrcpy", 
+    local_scrcpy_path = "./scrcpy-server.jar"
+    remote_scrcpy_path = "/data/local/tmp/vlc-scrcpy-server.jar"
 
-            "--stay-awake",
-            #"--turn-screen-off", 
+    device.sync.push(local_scrcpy_path, remote_scrcpy_path)
+    device.forward("tcp:1234", "localabstract:scrcpy")
 
-            f"--max-size={entity_detector_resolution[0]*4}",
-            f"--max-fps={fps}",
-            "--video-bit-rate", "2M", 
-            "--render-driver=opengl",
-            
+    def run_scrcpy_server():
+        output = device.shell(
+            "CLASSPATH={remote_scrcpy_path} \     app_process / com.genymobile.scrcpy.Server 1.25 \     tunnel_forward=true control=false cleanup=false \     max_size=720 raw_video_stream=true"
+        )
 
-            "--no-audio",
-            #"--no-control"
+    run_scrcpy_server()
+    #scrcpy_thread = threading.Thread(target=run_scrcpy_server, daemon=True)
+    #scrcpy_thread.start()
+
+    """"
+    ffmpeg_process = subprocess.Popen(
+        ["ffmpeg", 
+         "-i", "pipe:0",
+         "-pix_fmt", "rgb24",
+         "-vcodec", "rawvideo", 
+         
+         "-an", "-sn","video.mkv"# "-f", "rawvideo", "-"
         ],
-        stdout=subprocess.DEVNULL,
+        stdin=output.stdout,
+        stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL
-    )
+    )"""
+ 
+            #if time.time() - last_fire_time >= interval:
+            #    last_fire_time = time.time()
+            #    handle_frame(img)
 
-    #while True:
-    #    print("kaka")
+            #if cv2.waitKey(1) & 0xFF == ord('q'):
+            #    break
 
-    #window = find_window(app_name)
-    #if not window:
-    #    print(f"Application with title '{app_name}' not found.")
-    #    return
-    
-    #bbox = window.box
-
-    bbox = {
-        "left": 0,
-        "top": 0,
-        "width": entity_detector_resolution[0]*4,
-        "height": entity_detector_resolution[0]*4*2.22222222222222222222,
-    }
-    
-
-    with mss.mss() as sct:
-        last_fire_time = time.time()
-
-        while True:
-            frame = sct.grab(bbox)
-
-            img = np.array(frame)[:, :, :3]
-            img = img[topbar_size:, :, :]
-
-            if time.time() - last_fire_time >= interval:
-                last_fire_time = time.time()
-                handle_frame(img)
-
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-
-        cv2.destroyAllWindows()
-        scrcpy_process.terminate()
-        scrcpy_process.wait() 
-        
+        #cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    capture_app_window(app_name)
+    capture_app_window()
