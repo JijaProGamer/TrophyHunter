@@ -1,0 +1,4 @@
+disentangle: True
+resolution: [144, 64]
+latent_size: 2048
+path: "model.pt"

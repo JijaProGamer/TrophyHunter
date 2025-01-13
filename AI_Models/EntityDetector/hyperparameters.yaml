@@ -1,0 +1,26 @@
+resolution: [480, 224]
+path: "model.pt"
+threshold: 0.75
+iou_threshold: 0.2
+labels: 
+    - Ball
+    - Enemy
+    - Friendly
+    - Gem
+    - Hot_Zone
+    - Me
+    - PP
+    - PP_Box
+    - Safe_Enemy
+    - Safe_Friendly
+label_colors:
+    Ball: "255,0,0"
+    Enemy: "0,0,255"
+    Friendly: "0,255,0"
+    Gem: "0,255,255"
+    Hot_Zone: "255,165,0"
+    Me: "255,255,255"
+    PP: "255,0,255"
+    PP_Box: "255,255,0"
+    Safe_Enemy: "128,0,128"
+    Safe_Friendly: "0,128,0"
