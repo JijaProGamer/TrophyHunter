@@ -27,8 +27,10 @@ class Recorder:
                 self.handle_frame(self.current_frame)
                 self.is_processing = False
             time.sleep(0.001)
+            #cv2.waitKey(1)
 
     def start(self):
+        #print(vars(scrcpy))
         self.scrcpy_device.add_listener(scrcpy.EVENT_FRAME, self.handle_scrcpy_frame)
         self.scrcpy_device.start(threaded=True)
 

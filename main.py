@@ -19,9 +19,9 @@ for item in os.listdir(directory):
 
 
 #app_name = "BlueStacks"
-fps = 100
+fps = 30
 
-environment = Environment()
+environment = Environment(fps)
 
 recorder = Recorder(environment.scrcpy_device, fps, environment.handle_frame)
 

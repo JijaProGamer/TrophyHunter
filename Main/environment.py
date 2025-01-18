@@ -1,6 +1,6 @@
 import adbutils
 import scrcpy
-
+import math
 import copy
 import time
 import threading
@@ -12,14 +12,22 @@ import cv2
 
 from AI_Models.VAE.main import VAEWrapper
 from AI_Models.EntityDetector.main import EntityDetector
+from .output_controller import OutputController
+
+
 
 class Environment():
-    def __init__(self):
+    def __init__(self, max_fps):
+        self.max_fps = max_fps
+
         self.device = self.get_device()
-        self.get_emulator_device()
 
         self.vae_model = VAEWrapper(self.device)
         self.entity_model = EntityDetector(self.device)
+
+        self.get_emulator_device()
+        self.output_controller = OutputController(self.scrcpy_device)
+        self.emulator_resolution = [0, 0]
 
         self.last_time = time.time()
 
@@ -28,11 +36,16 @@ class Environment():
         self.last_entities = None
         self.fps = []
 
+
         ui_thread = threading.Thread(target=self.handle_ui)
         ui_thread.daemon = True
         ui_thread.start()
 
         self.reset()
+
+
+        self.timestep = 0
+        self.step_sharm = 0
 
     def reset(self):
         self.me = None
@@ -72,10 +85,33 @@ class Environment():
         if frame_bgr is None:
             return
 
+        self.emulator_resolution = [frame_bgr.shape[1], frame_bgr.shape[0]]
+        self.output_controller.resolution = self.emulator_resolution
 
         frame_rgb = frame_bgr[..., ::-1]
 
+
+
+
         entities = self.entity_model.predict(frame_bgr, frame_rgb)
+
+
+        self.timestep += 0.06
+        self.step_sharm += 1
+
+        x = math.cos(self.timestep)
+        y = math.sin(self.timestep)
+        self.output_controller.act([x, y, -x, y, 0, 0, 0, 0, 0, 0])
+        #self.output_controller.act([0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+
+        #shoot_x = -x
+        #shoot_y = -y
+        #shoot = int(step_sharm % 200 == 0)
+        #if step_sharm % 100 == 0 and not shoot:
+        #    shoot_x = 0
+        #    shoot_y = 0
+        #output_controller.act([x, y, 0, 0, 0, shoot_x, shoot_y, shoot, 1, 0])
+
 
         self.last_frame_rgb = frame_rgb
         self.last_frame_bgr = frame_bgr
@@ -107,10 +143,9 @@ class Environment():
             self.last_frame_bgr = None
             self.last_entities = None
 
-
             self.visualize_entities(frame_bgr, entities, fps)
 
-            scale_factor = 0.75
+            scale_factor = 2
             height, width = frame_bgr.shape[:2]
             new_dimensions = (int(width * scale_factor), int(height * scale_factor))
             frame_bgr_resized = cv2.resize(frame_bgr, new_dimensions, interpolation=cv2.INTER_AREA)
@@ -176,4 +211,4 @@ class Environment():
     def get_emulator_device(self):
         self.adb = adbutils.AdbClient(host="127.0.0.1", port=5037)
         self.adb_device = self.adb.device()
-        self.scrcpy_device = scrcpy.Client(self.adb_device)
+        self.scrcpy_device = scrcpy.Client(self.adb_device, bitrate=(10**6 * 12), max_width=math.floor(self.entity_model.args["resolution"][0] * 2), max_fps=self.max_fps)
