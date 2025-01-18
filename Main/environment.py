@@ -44,8 +44,8 @@ class Environment():
         self.reset()
 
 
-        self.timestep = 0
-        self.step_sharm = 0
+        #self.timestep = 0
+        #self.step_sharm = 0
 
     def reset(self):
         self.me = None
@@ -96,21 +96,18 @@ class Environment():
         entities = self.entity_model.predict(frame_bgr, frame_rgb)
 
 
-        self.timestep += 0.06
-        self.step_sharm += 1
-
-        x = math.cos(self.timestep)
-        y = math.sin(self.timestep)
-        self.output_controller.act([x, y, -x, y, 0, 0, 0, 0, 0, 0])
-        #self.output_controller.act([0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
-
+        #self.timestep += 0.09
+        #self.step_sharm += 1
+        #x = math.cos(self.timestep)
+        #y = math.sin(self.timestep)
         #shoot_x = -x
         #shoot_y = -y
-        #shoot = int(step_sharm % 200 == 0)
-        #if step_sharm % 100 == 0 and not shoot:
+        #shoot = int(self.step_sharm % 200 == 0)
+        #if self.step_sharm % 100 == 0 and not shoot:
         #    shoot_x = 0
         #    shoot_y = 0
-        #output_controller.act([x, y, 0, 0, 0, shoot_x, shoot_y, shoot, 1, 0])
+
+        #self.output_controller.act([x, y, shoot_x, shoot_y, shoot, 0, 0, 0, 0, 0])
 
 
         self.last_frame_rgb = frame_rgb

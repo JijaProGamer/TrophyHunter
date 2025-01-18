@@ -1,5 +1,6 @@
 import math
 import time
+import threading
 import scrcpy
 
 class OutputController():
@@ -22,6 +23,8 @@ class OutputController():
         self.last_keys = []
 
         self.isAiming = {"shoot": False, "ultra": False, "move": False}
+        self.isSleeping = {"shoot": False, "ultra": False}
+        self.sleepingTimes = {"shoot": 0, "ultra": 0}
         self.aimType = None
         self.resolution = None
 
@@ -60,45 +63,51 @@ class OutputController():
            
         if magnitude < 0.2:
             if self.isAiming["move"]:
-                self.scrcpy_device.control.touch(position_using[0] + position[0] * position_using[2], position_using[1]+ position[1] * position_using[2], scrcpy.ACTION_MOVE, indice)
-                self.scrcpy_device.control.touch(position_using[0] + position[0] * position_using[2], position_using[1]+ position[1] * position_using[2], scrcpy.ACTION_UP , indice)
+                self.scrcpy_device.control.touch(position_using[0], position_using[1], scrcpy.ACTION_UP , indice)
 
                 self.isAiming["move"] = False
         else:
             if not self.isAiming["move"]:
-                self.scrcpy_device.control.touch(position_using[0], position_using[1], scrcpy.ACTION_MOVE, indice)
                 self.scrcpy_device.control.touch(position_using[0], position_using[1], scrcpy.ACTION_DOWN, indice)
-                time.sleep(0.05)
+
+                self.isAiming["move"] = True
+                return
 
             self.scrcpy_device.control.touch(position_using[0] + position[0] * position_using[2], position_using[1] + position[1] * position_using[2], scrcpy.ACTION_MOVE, indice)
 
-            self.isAiming["move"] = True
-
     def handle_attack_events(self, position, method_using, indice):
-        magnitude = math.sqrt(position[0] ** 2 + position[1] ** 2)
         position_using = self.beginning_positions[method_using]
+
+        if self.isSleeping[method_using]:
+            if time.time() - self.sleepingTimes > 0.1: 
+                self.scrcpy_device.control.touch(position_using[0], position_using[1], scrcpy.ACTION_UP, indice)
+                self.isSleeping[method_using] = False
+            return
+        
+        magnitude = math.sqrt(position[0] ** 2 + position[1] ** 2)
 
         if position[2]:
             if self.isAiming[method_using]:
-                self.scrcpy_device.control.touch(position_using[0] + position[0] * position_using[2], position_using[1] + position[1] * position_using[2], scrcpy.ACTION_MOVE, indice)
-                self.scrcpy_device.control.touch(position_using[0] + position[0] * position_using[2], position_using[1] + position[1] * position_using[2], scrcpy.ACTION_UP , indice)
-                
-                self.isAiming[method_using] = False
-        else:            
-            if magnitude < 0.2:
-                self.scrcpy_device.control.touch(position_using[0] + position[0] * position_using[2], position_using[1]+ position[1] * position_using[2], scrcpy.ACTION_MOVE, indice)
-                self.scrcpy_device.control.touch(position_using[0] + position[0] * position_using[2], position_using[1]+ position[1] * position_using[2], scrcpy.ACTION_UP , indice)
+                self.scrcpy_device.control.touch(position_using[0], position_using[1], scrcpy.ACTION_MOVE, indice)
+                self.scrcpy_device.control.touch(position_using[0], position_using[1], scrcpy.ACTION_UP, indice)
 
                 self.isAiming[method_using] = False
+        else: 
+            if magnitude < 0.2:
+                if self.isAiming[method_using]:
+                    self.scrcpy_device.control.touch(position_using[0] + position[0] * position_using[2], position_using[1] + position[1] * position_using[2], scrcpy.ACTION_MOVE, indice)
+
+                    self.isSleeping[method_using] = True
+                    self.sleepingTimes = time.time()
+                    self.isAiming[method_using] = False
             else:
                 if not self.isAiming[method_using]:
-                    self.scrcpy_device.control.touch(position_using[0], position_using[1], scrcpy.ACTION_MOVE, indice)
                     self.scrcpy_device.control.touch(position_using[0], position_using[1], scrcpy.ACTION_DOWN, indice)
-                    time.sleep(0.05)
+
+                    self.isAiming[method_using] = True
+                    return
 
                 self.scrcpy_device.control.touch(position_using[0] + position[0] * position_using[2], position_using[1] + position[1] * position_using[2], scrcpy.ACTION_MOVE, indice)
-
-                self.isAiming[method_using] = True
 
     def press_button(self, position, indice):
         self.scrcpy_device.control.touch(position[0], position[1], scrcpy.ACTION_DOWN, indice)
