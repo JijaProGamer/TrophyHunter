@@ -18,18 +18,15 @@ for item in os.listdir(directory):
         os.rmdir(item_path)
 
 
-app_name = "BlueStacks"
-#ocr_detector_reso
-# lution = (1440, 672)
-entity_detector_resolution = (480, 224)
+#app_name = "BlueStacks"
 fps = 100
-interval = 1 / fps
 
 environment = Environment()
 
+recorder = Recorder(environment.scrcpy_device, fps, environment.handle_frame)
 
-recorder = Recorder(app_name, fps, environment.handle_frame)
-output_controller = OutputController(recorder.bbox)
+#recorder = Recorder(app_name, fps, environment.handle_frame)
+#output_controller = OutputController(recorder.bbox)
 
 """import math
 

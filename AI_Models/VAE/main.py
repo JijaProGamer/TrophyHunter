@@ -19,7 +19,7 @@ class VAEWrapper():
         self.device = device
         self.model = VAE(args, 0).to(device)
 
-        checkpoint = torch.load(os.path.join(dir_path, args["path"]))#, map_location=device)
+        checkpoint = torch.load(os.path.join(dir_path, args["path"]), map_location=device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.model.eval()
         self.model.encoder.eval()

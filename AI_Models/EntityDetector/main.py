@@ -5,6 +5,8 @@ import os
 import yaml
 import cv2
 
+import time
+
 health_values = {
     "Me": {
         "lower_bound": np.array([90 * 255/360, 55 * 255/100, 70 * 255/100]),
@@ -48,23 +50,25 @@ def transform_string_to_number(s):
     return int(numeric_part) if numeric_part else 0
 
 class EntityDetector():
-    def __init__(self):
+    def __init__(self, device):
         dir_path = os.path.dirname(os.path.realpath(__file__))
 
         with open(os.path.join(dir_path, 'hyperparameters.yaml')) as f:
             args = yaml.safe_load(f)
 
         self.args = args
+        self.device = device
         self.entity_model = YOLO(os.path.join(dir_path, args["path"]), verbose=False)
         self.ocr = easyocr.Reader(['en'])
     def predict(self, frame_bgr, frame_rgb):
         raw_predictions = self.raw_predict(frame_bgr, frame_rgb)
-        predictions = self.augment_predictions(frame_bgr, frame_rgb, raw_predictions)
+        predictions = raw_predictions#self.augment_predictions(frame_bgr, frame_rgb, raw_predictions)
 
         return predictions
     def raw_predict(self, frame_bgr, frame_rgb):
-        #preds = entity_model.track(frame_resize, verbose=False, conf=entity_detector_args["threshold"], iou=entity_detector_args["iou_threshold"], tracker="botsort.yaml", persist=True)[0]
-        raw_predictions = self.entity_model.predict(frame_bgr, verbose=False, conf=self.args["threshold"], iou=self.args["iou_threshold"])[0]
+        start = time.time()
+        raw_predictions = self.entity_model.predict(frame_bgr, verbose=False, conf=self.args["threshold"], iou=self.args["iou_threshold"], device=self.device)[0]
+        #raw_predictions = self.entity_model.track(frame_bgr, verbose=False, conf=self.args["threshold"], iou=self.args["iou_threshold"], device=self.device, tracker="botsort.yaml", persist=True)[0]
         outputs = []
 
         for detection in raw_predictions.boxes:
@@ -104,8 +108,6 @@ class EntityDetector():
                 ocr_detections = self.ocr.detect(roi)
                 #print((time.time() - detect_start) * 1000, "detect")
 
-
-                health = None
 
                 ocr_detections = ocr_detections[0]
                 for ocr_val in ocr_detections:

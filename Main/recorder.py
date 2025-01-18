@@ -1,51 +1,46 @@
-import mss
-import pygetwindow as gw
+import scrcpy
 import numpy as np
 import time
 import cv2
+import threading
 
-class Recorder():
-    def __init__(self, app_name, fps, handle_frame):
-        window = gw.getWindowsWithTitle(app_name)[0]
-
-        if not window:
-            print(f"Unable to find {app_name}...")
-            return
-        
-
-        bbox = {
-            "left": window.left,
-            "top": window.top,
-            "width": window.size[0],
-            "height": window.size[1]
-        }
-
-        if bbox["left"] < 0 or bbox["top"] < 0 or bbox["width"] < 0 or bbox["height"] < 0:
-            print(f"Unable to record, {app_name} needs to be active and on top")
-            return
-        
+class Recorder:
+    def __init__(self, scrcpy_device, fps, handle_frame):
         self.interval = 1 / fps
         self.fps = fps
-        self.app_name = app_name
-        self.bbox = bbox
-        self.handle_frame = handle_frame
         self.stopped = False
+        
+        self.handle_frame = handle_frame
+        self.scrcpy_device = scrcpy_device
+
+        self.is_processing = False
+        self.current_frame = None
+        self.processing_thread = None
+
+    def handle_scrcpy_frame(self, frame):
+        self.current_frame = frame 
+
+    def process_frames(self):
+        while not self.stopped:
+            if self.current_frame is not None and not self.is_processing:
+                self.is_processing = True
+                self.handle_frame(self.current_frame)
+                self.is_processing = False
+            time.sleep(0.001)
+
     def start(self):
-        with mss.mss() as sct:
-            last_fire_time = time.time()
+        self.scrcpy_device.add_listener(scrcpy.EVENT_FRAME, self.handle_scrcpy_frame)
+        self.scrcpy_device.start(threaded=True)
 
-            while True:
-                frame = sct.grab(self.bbox)
+        self.processing_thread = threading.Thread(target=self.process_frames)
+        self.processing_thread.daemon = True
+        self.processing_thread.start()
 
-                img = np.array(frame)[:, :, :3]
-
-                if time.time() - last_fire_time >= self.interval:
-                    last_fire_time = time.time()
-                    self.handle_frame(img)
-
-                if self.stopped:
-                    break
-
-                cv2.waitKey(1)
     def stop(self):
         self.stopped = True
+            
+        if self.processing_thread:
+            self.processing_thread.join()
+
+        self.scrcpy_device.remove_listener(scrcpy.EVENT_FRAME)
+        self.scrcpy_device.stop()
