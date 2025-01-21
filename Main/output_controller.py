@@ -11,21 +11,22 @@ class OutputController():
     }
 
     mouse_initial_positions = {
-        "move": [0.1, 0.87, 0.05],
-        "shoot": [0.9, 0.78, 0.05],
-        "ultra": [0.82, 0.85, 0.05],
+        #"move": [0.1, 0.87, 0.05],
+        #"shoot": [0.9, 0.78, 0.05],
+        #"ultra": [0.82, 0.85, 0.05],
+        "move": [0.1, 0.87, 0.031],
+        "shoot": [0.9, 0.78, 0.031],
+        "ultra": [0.82, 0.85, 0.031],
         "gadget": [0.85, 0.92],
         "hypercharge": [0.78, 0.92],
     }
 
     def __init__(self, scrcpy_device):
         self.scrcpy_device = scrcpy_device
-        self.last_keys = []
 
         self.isAiming = {"shoot": False, "ultra": False, "move": False}
         self.isSleeping = {"shoot": False, "ultra": False}
         self.sleepingTimes = {"shoot": 0, "ultra": 0}
-        self.aimType = None
         self.resolution = None
 
     def act(self, raw_actions):

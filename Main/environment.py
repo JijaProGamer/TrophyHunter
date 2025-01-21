@@ -7,14 +7,54 @@ import threading
 import queue
 import torch
 import platform
+import easyocr
 import numpy as np
 import cv2
 
 from AI_Models.VAE.main import VAEWrapper
-from AI_Models.EntityDetector.main import EntityDetector
+from AI_Models.EnvironmentClassifier.model import SEResNeXtFineTuner
+#from AI_Models.EntityDetector.main import EntityDetector
 from .output_controller import OutputController
+from .environment_controller import EnvironmentController
+from .utils import filter_ocr_results
 
+class SmartNoise:
+    def __init__(self, size, mu=0.0, theta=0.15, sigma=0.2, dt=1e-2, clip=[-1, 1], seed=None):
+        """
+        Initialize the SmartNoise generator.
 
+        Parameters:
+        - size (int): The number of parameters to generate noise for.
+        - mu (float): The long-term mean of the noise.
+        - theta (float): The rate of mean reversion.
+        - sigma (float): The volatility parameter.
+        - dt (float): Time step for updates.
+        - clip (int[]): clip the generated values to be within clip.
+        - seed (int, optional): Seed for random number generator.
+        """
+
+        self.size = size
+        self.mu = mu
+        self.theta = theta
+        self.sigma = sigma
+        self.dt = dt
+        self.clip = clip
+        self.state = np.ones(size) * mu
+        self.rng = np.random.default_rng(seed)
+
+    def reset(self):
+        """Reset the noise state to the mean value."""
+        self.state = np.ones(self.size) * self.mu
+
+    def sample(self):
+        dx = self.theta * (self.mu - self.state) * self.dt
+        dx += self.sigma * np.sqrt(self.dt) * self.rng.standard_normal(self.size)
+        self.state += dx
+
+        if self.clip:
+            self.state = np.clip(self.state, self.clip[0], self.clip[1])
+
+        return self.state
 
 class Environment():
     def __init__(self, max_fps):
@@ -23,11 +63,20 @@ class Environment():
         self.device = self.get_device()
 
         self.vae_model = VAEWrapper(self.device)
-        self.entity_model = EntityDetector(self.device)
+        self.environment_classifier = SEResNeXtFineTuner(num_classes=18, device=self.device)
+        #self.entity_model = EntityDetector(self.device)
+
+        self.environment_classifier.freeze_layers()
+        self.environment_classifier.load()
+
+        self.exploration_noise = SmartNoise(10, mu=0.0, theta=0.2, sigma=0.5, dt=0.1, clip=[-1, 1])
 
         self.get_emulator_device()
         self.output_controller = OutputController(self.scrcpy_device)
+        self.environment_controller = EnvironmentController(self.scrcpy_device)
         self.emulator_resolution = [0, 0]
+
+        self.ocr_reader = easyocr.Reader(['en'])
 
         self.last_time = time.time()
 
@@ -43,9 +92,16 @@ class Environment():
 
         self.reset()
 
+        self.mode = "VAE_IMAGE_CAPTURER"
 
         #self.timestep = 0
         #self.step_sharm = 0
+
+        self.selected_brawler = None#"SHELLY"
+        self.chosen_brawler = False
+
+        self.is_brawler_scrolling_mode = False
+        self.brawler_scrolling_num = 0
 
     def reset(self):
         self.me = None
@@ -87,32 +143,104 @@ class Environment():
 
         self.emulator_resolution = [frame_bgr.shape[1], frame_bgr.shape[0]]
         self.output_controller.resolution = self.emulator_resolution
+        self.environment_controller.update_positions(self.emulator_resolution)
+
 
         frame_rgb = frame_bgr[..., ::-1]
+        
+        environmentType = self.environment_classifier.predict(frame_rgb)
+        acting = False
+        
 
+        if self.is_brawler_scrolling_mode:
+            self.brawler_scrolling_num += 1
+            if self.brawler_scrolling_num > 500:
+                self.brawler_scrolling_num = 0
+                self.is_brawler_scrolling_mode = False
 
+            scroll_position = self.environment_controller.positions["character_scroll_position"]
 
+            white_mask = (
+                #(abs(frame_bgr[:, :, 0] - frame_bgr[:, :, 1]) < 5) &
+                #(abs(frame_bgr[:, :, 1] - frame_bgr[:, :, 2]) < 5) &
+                (frame_bgr[:, :, 0] > 230) &
+                (frame_bgr[:, :, 1] > 230) &
+                (frame_bgr[:, :, 2] > 230)
+            )
 
-        entities = self.entity_model.predict(frame_bgr, frame_rgb)
+            gray_roi = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY) * white_mask.astype(np.uint8)
 
+            ocr_results = self.ocr_reader.readtext(gray_roi)
+            ocr_results = filter_ocr_results(ocr_results, self.environment_controller.args["brawlers"], 1)
 
-        #self.timestep += 0.09
-        #self.step_sharm += 1
-        #x = math.cos(self.timestep)
-        #y = math.sin(self.timestep)
-        #shoot_x = -x
-        #shoot_y = -y
-        #shoot = int(self.step_sharm % 200 == 0)
-        #if self.step_sharm % 100 == 0 and not shoot:
-        #    shoot_x = 0
-        #    shoot_y = 0
+            search = next((item for item in ocr_results if item['text'] == self.selected_brawler), None)
 
-        #self.output_controller.act([x, y, shoot_x, shoot_y, shoot, 0, 0, 0, 0, 0])
+            if search is not None:
+                self.brawler_scrolling_num = 0
+                self.is_brawler_scrolling_mode = False
+
+                self.environment_controller.press_button_raw(search["pos"][0], search["pos"][1])
+                time.sleep(2)
+            else:
+                for i in range(1, 5):
+                    self.environment_controller.move_start("character_scroll_position")
+                    self.environment_controller.move(scroll_position[0], scroll_position[1] - 50)
+                    time.sleep(0.02)
+                    self.environment_controller.move_stop("character_scroll_position")
+        else:
+            if self.mode == "VAE_IMAGE_CAPTURER":
+                if "Lobby" in environmentType:
+                    if self.chosen_brawler:
+                        # switch gamemode
+                        # for now lazy way, just press play
+
+                        self.chosen_brawler = False
+
+                        self.environment_controller.press_button("play")
+                        time.sleep(2)
+                    else:
+                        time.sleep(2)
+                        self.environment_controller.press_button("position_character")
+                        time.sleep(2)
+                        self.chosen_brawler = True
+
+                elif "Brawlers" in environmentType and self.chosen_brawler:
+                    if self.selected_brawler == None:
+                        self.selected_brawler = "SHELLY"
+                    else:
+                        index = self.environment_controller.args["brawlers"].index(self.selected_brawler)
+                        if index >= len(self.environment_controller.args["brawlers"]):
+                            index = -1
+
+                        self.selected_brawler = self.environment_controller.args["brawlers"][index + 1]
+
+                    scroll_position = self.environment_controller.positions["character_scroll_position"]
+
+                    for i in range(1, 300):
+                        self.environment_controller.move_start("character_scroll_position")
+                        self.environment_controller.move(scroll_position[0], scroll_position[1] + 50)
+                        time.sleep(0.05)
+                        self.environment_controller.move_stop("character_scroll_position")
+
+                    self.is_brawler_scrolling_mode = True
+                    self.brawler_scrolling_num = 0
+                elif "BrawlerSelector" in environmentType:
+                    self.environment_controller.press_button("select_character")
+                    time.sleep(2)
+                elif "Game" in environmentType:
+                    if not ("Wait" in environmentType) and not ("Dead" in environmentType):
+                        acting = True
+                        noise = self.exploration_noise.sample()
+                        #noise[1] -= 0.0025
+                        self.output_controller.act(noise)
+
+        if not acting:
+            self.output_controller.stop()
 
 
         self.last_frame_rgb = frame_rgb
         self.last_frame_bgr = frame_bgr
-        self.last_entities = entities
+        #self.last_entities = entities
 
         current_time = time.time()
         self.fps.append(current_time - self.last_time)
@@ -130,27 +258,27 @@ class Environment():
 
             frame_bgr = self.last_frame_bgr.astype(np.uint8)
             frame_rgb = self.last_frame_rgb
-            entities = self.last_entities
+            #entities = self.last_entities
             fps = 1 / np.mean(self.fps)
 
-            if frame_bgr is None or frame_rgb is None or entities is None or fps is None:
+            if frame_bgr is None or frame_rgb is None or fps is None:
                 continue
 
             self.last_frame_rgb = None
             self.last_frame_bgr = None
-            self.last_entities = None
+            #self.last_entities = None
 
-            self.visualize_entities(frame_bgr, entities, fps)
+            self.visualize_entities(frame_bgr, fps)
 
-            scale_factor = 2
+            scale_factor = 1.5
             height, width = frame_bgr.shape[:2]
             new_dimensions = (int(width * scale_factor), int(height * scale_factor))
             frame_bgr_resized = cv2.resize(frame_bgr, new_dimensions, interpolation=cv2.INTER_AREA)
 
             cv2.imshow("TrophyHunter", frame_bgr_resized)
 
-    def visualize_entities(self, frame_bgr, entities, fps):
-        for entity in entities:
+    def visualize_entities(self, frame_bgr, fps):
+        """for entity in entities:
             label = entity['label']
             confidence = entity['confidence']
             bbox = entity['bbox']
@@ -169,7 +297,7 @@ class Environment():
             cv2.putText(frame_bgr, text, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
             if entity["health"] is not None:
-                cv2.putText(frame_bgr, f"Health: {entity['health']}", (x2 + 5, y1 + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                cv2.putText(frame_bgr, f"Health: {entity['health']}", (x2 + 5, y1 + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)"""
 
         cv2.putText(frame_bgr, f"FPS: {fps:.0f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
@@ -207,5 +335,6 @@ class Environment():
             return torch.device("cpu")
     def get_emulator_device(self):
         self.adb = adbutils.AdbClient(host="127.0.0.1", port=5037)
+
         self.adb_device = self.adb.device()
-        self.scrcpy_device = scrcpy.Client(self.adb_device, bitrate=(10**6 * 12), max_width=math.floor(self.entity_model.args["resolution"][0] * 2), max_fps=self.max_fps)
+        self.scrcpy_device = scrcpy.Client(self.adb_device, bitrate=(10**6 * 16), max_width=math.floor(self.vae_model.args["resolution"][0] * 8), max_fps=self.max_fps)
