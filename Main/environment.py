@@ -1,15 +1,15 @@
 import adbutils
 import scrcpy
 import math
-import copy
 import time
 import threading
-import queue
 import torch
 import platform
 import easyocr
+import uuid
 import numpy as np
 import cv2
+import random
 
 from AI_Models.VAE.main import VAEWrapper
 from AI_Models.EnvironmentClassifier.model import SEResNeXtFineTuner
@@ -26,16 +26,15 @@ class SmartNoise:
         Parameters:
         - size (int): The number of parameters to generate noise for.
         - mu (float): The long-term mean of the noise.
-        - theta (float): The rate of mean reversion.
+        - theta (float or array-like): The rate of mean reversion, scalar or per-variable array.
         - sigma (float): The volatility parameter.
         - dt (float): Time step for updates.
-        - clip (int[]): clip the generated values to be within clip.
+        - clip (int[]): Clip the generated values to be within clip.
         - seed (int, optional): Seed for random number generator.
         """
-
         self.size = size
         self.mu = mu
-        self.theta = theta
+        self.theta = np.full(size, theta) if np.isscalar(theta) else np.array(theta)
         self.sigma = sigma
         self.dt = dt
         self.clip = clip
@@ -56,6 +55,7 @@ class SmartNoise:
 
         return self.state
 
+
 class Environment():
     def __init__(self, max_fps):
         self.max_fps = max_fps
@@ -63,13 +63,14 @@ class Environment():
         self.device = self.get_device()
 
         self.vae_model = VAEWrapper(self.device)
-        self.environment_classifier = SEResNeXtFineTuner(num_classes=18, device=self.device)
+        self.environment_classifier = SEResNeXtFineTuner(device=self.device)
         #self.entity_model = EntityDetector(self.device)
 
         self.environment_classifier.freeze_layers()
         self.environment_classifier.load()
 
-        self.exploration_noise = SmartNoise(10, mu=0.0, theta=0.2, sigma=0.5, dt=0.1, clip=[-1, 1])
+        #self.exploration_noise = SmartNoise(10, mu=0.0, theta=[0.2, 0.2, 0.5, 0.5, 0.75, 0.5, 0.5, 0.75, 0.75, 0.75], sigma=0.35, dt=0.35, clip=[-1, 1])
+        self.exploration_noise = SmartNoise(10, mu=0.0, theta=0.1, sigma=0.35, dt=0.35, clip=[-1, 1])
 
         self.get_emulator_device()
         self.output_controller = OutputController(self.scrcpy_device)
@@ -97,11 +98,28 @@ class Environment():
         #self.timestep = 0
         #self.step_sharm = 0
 
-        self.selected_brawler = None#"SHELLY"
+        self.selected_brawler = None
         self.chosen_brawler = False
+        self.brawler_scrolling_direction = None
+        self.brawlers_visible = []
+
+        self.selected_mode = None
+        self.chosen_mode = False
+        self.mode_scrolling_direction = None
+        self.modes_visible = []
+
+        self.last_frames = []
 
         self.is_brawler_scrolling_mode = False
-        self.brawler_scrolling_num = 0
+        self.is_mode_scrolling_mode = False
+
+        self.found_brawler = False
+        self.found_mode = False
+
+        self.selected_skin = False
+
+        self.awaitMode = None
+        self.blockMode = None
 
     def reset(self):
         self.me = None
@@ -143,96 +161,249 @@ class Environment():
 
         self.emulator_resolution = [frame_bgr.shape[1], frame_bgr.shape[0]]
         self.output_controller.resolution = self.emulator_resolution
-        self.environment_controller.update_positions(self.emulator_resolution)
+        self.environment_controller.update_positions(self.emulator_resolution, self.real_emulator_resolution)
 
 
         frame_rgb = frame_bgr[..., ::-1]
         
+        #entities = self.entity_model.
         environmentType = self.environment_classifier.predict(frame_rgb)
         acting = False
-        
+        canDoActions = True
 
-        if self.is_brawler_scrolling_mode:
-            self.brawler_scrolling_num += 1
-            if self.brawler_scrolling_num > 500:
-                self.brawler_scrolling_num = 0
-                self.is_brawler_scrolling_mode = False
-
-            scroll_position = self.environment_controller.positions["character_scroll_position"]
-
-            white_mask = (
-                #(abs(frame_bgr[:, :, 0] - frame_bgr[:, :, 1]) < 5) &
-                #(abs(frame_bgr[:, :, 1] - frame_bgr[:, :, 2]) < 5) &
-                (frame_bgr[:, :, 0] > 230) &
-                (frame_bgr[:, :, 1] > 230) &
-                (frame_bgr[:, :, 2] > 230)
-            )
-
-            gray_roi = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY) * white_mask.astype(np.uint8)
-
-            ocr_results = self.ocr_reader.readtext(gray_roi)
-            ocr_results = filter_ocr_results(ocr_results, self.environment_controller.args["brawlers"], 1)
-
-            search = next((item for item in ocr_results if item['text'] == self.selected_brawler), None)
-
-            if search is not None:
-                self.brawler_scrolling_num = 0
-                self.is_brawler_scrolling_mode = False
-
-                self.environment_controller.press_button_raw(search["pos"][0], search["pos"][1])
-                time.sleep(2)
+        if self.awaitMode is not None:
+            if not (self.awaitMode in environmentType) or (self.blockMode in environmentType):
+                canDoActions = False
             else:
-                for i in range(1, 5):
-                    self.environment_controller.move_start("character_scroll_position")
-                    self.environment_controller.move(scroll_position[0], scroll_position[1] - 50)
-                    time.sleep(0.02)
-                    self.environment_controller.move_stop("character_scroll_position")
-        else:
-            if self.mode == "VAE_IMAGE_CAPTURER":
-                if "Lobby" in environmentType:
-                    if self.chosen_brawler:
-                        # switch gamemode
-                        # for now lazy way, just press play
+                self.blockMode = None
+                self.awaitMode = None
 
-                        self.chosen_brawler = False
+        if canDoActions:
+            if self.is_brawler_scrolling_mode:
+                move_direction = 1 if self.brawler_scrolling_direction == "Up" else -1
+                move_direction *= 300
 
-                        self.environment_controller.press_button("play")
-                        time.sleep(2)
+                scroll_position = self.environment_controller.positions["character_scroll_position"]
+
+                #white_mask = (
+                #    (frame_bgr[:, :, 0] > 230) &
+                #    (frame_bgr[:, :, 1] > 230) &
+                #    (frame_bgr[:, :, 2] > 230)
+                #)
+
+                gray_roi = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)# * white_mask.astype(np.uint8)
+
+                ocr_results = self.ocr_reader.readtext(gray_roi)
+                ocr_results = filter_ocr_results(ocr_results, self.environment_controller.args["brawlers"], 1)
+
+                search = next((item for item in ocr_results if item['text'] == self.selected_brawler), None)
+
+                if search is not None:
+                    if self.found_brawler:
+                        self.is_brawler_scrolling_mode = False
+
+                        self.environment_controller.press_button_raw(search["pos"][0], search["pos"][1])
+                        self.awaitMode = "BrawlerSelector"
                     else:
-                        time.sleep(2)
-                        self.environment_controller.press_button("position_character")
-                        time.sleep(2)
-                        self.chosen_brawler = True
+                        self.found_brawler = True
+                        time.sleep(0.5)
+                else:
+                    current_brawlers = [item["text"] for item in ocr_results]
+                    max_visible_length = 3
 
-                elif "Brawlers" in environmentType and self.chosen_brawler:
-                    if self.selected_brawler == None:
-                        self.selected_brawler = "SHELLY"
+                    self.brawlers_visible.append(current_brawlers)
+                    if len(self.brawlers_visible) > max_visible_length:
+                        del self.brawlers_visible[0]
+
+                    if sorted(self.brawlers_visible[0]) == sorted(current_brawlers) and len(self.brawlers_visible) == max_visible_length:
+                        self.brawlers_visible = []
+                        self.brawler_scrolling_direction = "Up" if self.brawler_scrolling_direction == "Down" else "Down"
+
+                    self.adb_device.swipe(scroll_position[0], scroll_position[1], scroll_position[0], scroll_position[1] + move_direction, 0.15)
+                    time.sleep(0.25)
+            elif self.is_mode_scrolling_mode:
+                scroll_position = self.environment_controller.positions["mode_scroll_position"]
+
+                move_direction = 1 if self.mode_scrolling_direction == "Left" else -1
+                move_direction *= 300
+
+                #white_mask = (
+                #    (frame_bgr[:, :, 0] > 230) &
+                #    (frame_bgr[:, :, 1] > 230) &
+                #    (frame_bgr[:, :, 2] > 230)
+                #)
+
+                gray_roi = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)# * white_mask.astype(np.uint8)
+
+                ocr_results = self.ocr_reader.readtext(gray_roi)
+                ocr_results = filter_ocr_results(ocr_results, self.environment_controller.args["modes"], 1)
+
+                ranked_result = next((item for item in ocr_results if item['text'] == "RANKED"), None)
+                if ranked_result:
+                    ranked_center = ranked_result['pos']
+                    ranked_x, ranked_y = ranked_center[0], ranked_center[1]
+
+                    filtered_results = []
+
+                    for result in ocr_results:
+                        if result['text'] == "RANKED":
+                            continue
+
+                        center = result['pos']
+                        x, y = center[0], center[1]
+
+                        close_x = abs(x - ranked_x) < 200
+                        higher_y = y > (ranked_y + 20)
+
+
+                        if not (close_x and higher_y):
+                            filtered_results.append(result)
+
+                    ocr_results = filtered_results
+
+                search = next((item for item in ocr_results if item['text'] == self.selected_mode), None)
+
+                if search is not None:
+                    if self.found_mode:
+                        self.is_mode_scrolling_mode = False
+
+                        self.environment_controller.press_button_raw(search["pos"][0], search["pos"][1])
+                        self.awaitMode = "Lobby"
                     else:
-                        index = self.environment_controller.args["brawlers"].index(self.selected_brawler)
-                        if index >= len(self.environment_controller.args["brawlers"]):
-                            index = -1
+                        self.found_mode = True
+                        time.sleep(0.5)
+                else:
+                    current_modes = [item["text"] for item in ocr_results]
+                    max_visible_length = 3
 
-                        self.selected_brawler = self.environment_controller.args["brawlers"][index + 1]
+                    self.modes_visible.append(current_modes)
+                    if len(self.modes_visible) > max_visible_length:
+                        del self.modes_visible[0]
 
-                    scroll_position = self.environment_controller.positions["character_scroll_position"]
+                    if sorted(self.modes_visible[0]) == sorted(current_modes) and len(self.modes_visible) == max_visible_length:
+                        self.modes_visible = []
+                        self.selected_mode = random.choice(self.environment_controller.args["modes"])
+                        while self.selected_mode == "RANKED":
+                            self.selected_mode = random.choice(self.environment_controller.args["modes"])
 
-                    for i in range(1, 300):
-                        self.environment_controller.move_start("character_scroll_position")
-                        self.environment_controller.move(scroll_position[0], scroll_position[1] + 50)
-                        time.sleep(0.05)
-                        self.environment_controller.move_stop("character_scroll_position")
+                        self.mode_scrolling_direction = "Right" if self.mode_scrolling_direction == "Left" else "Left"
 
-                    self.is_brawler_scrolling_mode = True
-                    self.brawler_scrolling_num = 0
-                elif "BrawlerSelector" in environmentType:
-                    self.environment_controller.press_button("select_character")
-                    time.sleep(2)
-                elif "Game" in environmentType:
-                    if not ("Wait" in environmentType) and not ("Dead" in environmentType):
-                        acting = True
-                        noise = self.exploration_noise.sample()
-                        #noise[1] -= 0.0025
-                        self.output_controller.act(noise)
+                    self.adb_device.swipe(scroll_position[0], scroll_position[1], scroll_position[0] + move_direction, scroll_position[1], 0.15)
+                    time.sleep(0.25)
+            else:
+                if self.mode == "VAE_IMAGE_CAPTURER":
+                    if "Lobby" in environmentType:
+                        if self.chosen_brawler:
+                            if self.chosen_mode:
+                                self.chosen_brawler = False
+                                self.chosen_mode = False
+
+                                self.environment_controller.press_button("play")
+                                self.awaitMode = "Game"
+                            else:
+                                self.modes_visible = []
+
+                                self.environment_controller.press_button("select_modes")
+                                self.chosen_mode = True
+                                self.awaitMode = "Modes"
+                        else:
+                            self.brawlers_visible = []
+
+                            self.environment_controller.press_button("position_character")
+                            self.chosen_brawler = True
+                            self.awaitMode = "Brawlers"
+                    elif "Modes" in environmentType and self.chosen_mode:
+                        self.selected_mode = random.choice(self.environment_controller.args["modes"])
+                        while self.selected_mode == "RANKED":
+                            self.selected_mode = random.choice(self.environment_controller.args["modes"])
+
+                        self.mode_scrolling_direction = "Right"
+                        self.is_mode_scrolling_mode = True
+                        self.found_mode = False
+                    elif "Brawlers" in environmentType and self.chosen_brawler:
+                        self.selected_brawler = random.choice(self.environment_controller.args["brawlers"])
+
+                        self.brawler_scrolling_direction = "Up"
+                        self.is_brawler_scrolling_mode = True
+                        self.found_brawler = False
+                    elif "BrawlerSelector" in environmentType:
+                        if "SkinSelector" in environmentType:
+                            x1 = int(0.03 * frame_bgr.shape[1])
+                            x2 = int(0.19 * frame_bgr.shape[1])
+                            y1 = int(0.83 * frame_bgr.shape[0])
+                            y2 = int(0.95 * frame_bgr.shape[0])
+
+                            roi = frame_bgr[y1:y2, x1:x2]
+                            b_channel, g_channel, r_channel = cv2.split(roi)
+
+                            mean_red = np.mean(r_channel)
+                            mean_green = np.mean(g_channel)
+
+                            if mean_red > mean_green:
+                                self.environment_controller.press_button("randomise_skin")
+
+                            self.environment_controller.press_button("exit_randomiser")
+                            self.awaitMode = "BrawlerSelector"
+                            self.blockMode = "SkinSelector"
+                        else:
+                            if self.selected_skin:
+                                time.sleep(0.5)
+                                self.environment_controller.press_button("select_character")
+                                self.awaitMode = "Lobby"
+                            else:
+                                self.environment_controller.press_button("select_skin")
+                                time.sleep(0.5)
+
+                                self.awaitMode = "SkinSelector"
+                                self.selected_skin = True
+                    elif "Game" in environmentType:
+                        if not ("Wait" in environmentType):
+                            if not ("Dead" in environmentType):
+                                acting = True
+                                noise = self.exploration_noise.sample()
+                                noise[1] -= 0.05
+
+                                if not "HasUltra" in environmentType:
+                                    noise[5] = noise[6] = noise[7] = 0
+
+                                if not "HasGadget" in environmentType:
+                                    noise[8] = 0
+
+                                if not "HasHypercharge" in environmentType:
+                                    noise[9] = 0
+
+                                self.output_controller.act(noise)
+
+                                small_image = cv2.resize(frame_bgr, (400, 224), cv2.INTER_AREA).astype(np.float32)
+                                self.last_frames.append(small_image)
+
+
+                                if len(self.last_frames) >= 60:
+                                    start = time.time()
+                                    average_frame = np.mean(self.last_frames, axis=0).astype(np.float32)
+                                    deviations = [np.sum(np.abs(frame - average_frame)) for frame in self.last_frames]
+
+                                    probabilities = np.array(deviations) / np.sum(deviations)
+
+                                    selected_index = np.random.choice(len(self.last_frames), p=probabilities)
+                                    most_interesting_frame = self.last_frames[selected_index]
+
+                                    cv2.imwrite(f"VAEImages/{uuid.uuid4()}.png", most_interesting_frame)
+
+                                    self.last_frames = []
+                            else:
+                                if "ShowdownExit":
+                                    self.environment_controller.press_button("showdown_exit")
+                    elif "Proceed":
+                        self.environment_controller.press_button("proceed")
+                        time.sleep(3)
+                        #self.awaitMode = "Exit" # Needs to be able to handle double proceeding (for example games other than showdown)
+                    elif "Exit":
+                        self.environment_controller.press_button("exit")
+                        self.awaitMode = "Lobby"
+                    elif "MultiChose":
+                        self.environment_controller.press_button("multichoose_like")
+                        self.awaitMode = "Lobby"
 
         if not acting:
             self.output_controller.stop()
@@ -270,7 +441,7 @@ class Environment():
 
             self.visualize_entities(frame_bgr, fps)
 
-            scale_factor = 1.5
+            scale_factor = 1
             height, width = frame_bgr.shape[:2]
             new_dimensions = (int(width * scale_factor), int(height * scale_factor))
             frame_bgr_resized = cv2.resize(frame_bgr, new_dimensions, interpolation=cv2.INTER_AREA)
@@ -336,5 +507,42 @@ class Environment():
     def get_emulator_device(self):
         self.adb = adbutils.AdbClient(host="127.0.0.1", port=5037)
 
-        self.adb_device = self.adb.device()
-        self.scrcpy_device = scrcpy.Client(self.adb_device, bitrate=(10**6 * 16), max_width=math.floor(self.vae_model.args["resolution"][0] * 8), max_fps=self.max_fps)
+
+        devices = self.adb.device_list()
+        if not devices:
+            print("No devices connected.")
+            return
+
+        print("Connected Devices:")
+        for idx, device in enumerate(devices):
+            print(f"[{idx}] Serial: {device.serial}")
+
+
+        device = None
+
+        if len(devices) == 1:
+            device = devices[0]
+        else:
+            while True:
+                try:
+                    index = int(input("Enter the index of the device to use: "))
+                    if 0 <= index < len(devices):
+                        device = devices[index]
+                        break
+                    else:
+                        print("Invalid index. Please try again.")
+                except ValueError:
+                    print("Please enter a valid integer.")
+
+        if not device:
+            print("No device chosen.")
+            return
+        
+
+        self.adb_device = device
+        self.scrcpy_device = scrcpy.Client(device, bitrate=(10**6 * 32), max_width=860, max_fps=self.max_fps)
+
+        real_resolution = self.adb_device.shell("wm size").strip().split(": ")[1]
+        real_width, real_height = map(int, real_resolution.split("x"))
+
+        self.real_emulator_resolution = [real_width, real_height]

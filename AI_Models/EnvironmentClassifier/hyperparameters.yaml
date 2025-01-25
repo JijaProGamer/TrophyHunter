@@ -1,2 +1,3 @@
-classes: [BrawlerSelector, Brawlers, Dead, Defeat, Done, Exit, Game, Highlight, Item, ItemMultichose, Lobby, Modes, MultiChose, Offer, Proceed, ShowdownExit, Victory, Wait]
+classes: [ BrawlerSelector, Brawlers, Dead, Defeat, Done, Exit, Game, HasGadget, HasHypercharge, HasUltra, Highlight, IdleWarning, Item, ItemMultichose, Lobby, Modes, MultiChose, Offer, Proceed, ShowdownExit, SkinSelector, Victory, Wait ]
+
 path: "model.pt"

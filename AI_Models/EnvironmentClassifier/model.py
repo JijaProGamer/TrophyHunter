@@ -7,7 +7,7 @@ import ssl
 import pretrainedmodels
 
 class SEResNeXtFineTuner:
-    def __init__(self, model_name='se_resnext50_32x4d', num_classes=5, device="cuda"):
+    def __init__(self, model_name='se_resnext50_32x4d', device="cuda"):
         self.dir_path = os.path.dirname(os.path.realpath(__file__))
 
         with open(os.path.join(self.dir_path, 'hyperparameters.yaml')) as f:
@@ -24,7 +24,7 @@ class SEResNeXtFineTuner:
         self.model = pretrainedmodels.__dict__[model_name](pretrained='imagenet')
         ssl._create_default_https_context = original_context
         
-        self.model.last_linear = nn.Linear(self.model.last_linear.in_features, num_classes)
+        self.model.last_linear = nn.Linear(self.model.last_linear.in_features, len(self.args["classes"]))
         self.model = self.model.to(self.device)
         
         self.mean = self.model.mean

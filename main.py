@@ -19,7 +19,7 @@ for item in os.listdir(directory):
 
 
 #app_name = "BlueStacks"
-fps = 30
+fps = 20
 
 environment = Environment(fps)
 
